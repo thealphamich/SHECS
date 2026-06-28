@@ -9,7 +9,7 @@ SHECS (Smart Home Energy Control System) is a high-fidelity energy monitoring an
 - **Trend Monitoring**: Dual-series charts for Active Meters, Total Balance (kWh), and Estimated Revenue (RWF).
 - **Utility Tracking**: All-access oversight of registered meters, top-up histories, and system alerts.
 - **User Management**: Role-based access control with secure profile creation and automated notification triggers.
-- **Data Export**: Support for exporting utility data and transaction logs to CSV.
+- **Data Export**: Support for exporting utility data, transaction histories, and system alerts to highly formatted PDF reports.
 
 ### For Users
 - **Real-Time Dashboards**: Monitor live power telemetry (kW, Voltage, Amperage) directly from the smart meter.
