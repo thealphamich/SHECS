@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { revalidatePath } from 'next/cache'
 
 export async function registerMeter(data: {
@@ -62,6 +63,12 @@ export async function registerMeter(data: {
             message: `Meter ${data.meter_code} registered`,
             link: `/admin/insights`
         })
+    }
+
+    // Check for low balance alerts immediately
+    const { data: meterRecord } = await supabase.from('meters').select('id').eq('meter_code', data.meter_code).single()
+    if (meterRecord) {
+        await checkAndCreateAlert(supabase, meterRecord.id, data.balance_kwh || 0)
     }
 
     revalidatePath('/dashboard')
@@ -134,8 +141,11 @@ export async function performTopUp({ meter_id, amount_paid }: { meter_id: string
         token_code: token
     })
 
+    await checkAndCreateAlert(supabase, meter_id, newBalance)
+
     revalidatePath('/dashboard')
-    revalidatePath('/admin')
+    revalidatePath('/admin/insights')
+    revalidatePath('/admin/tracking')
 
     return {
         token,
@@ -146,6 +156,7 @@ export async function performTopUp({ meter_id, amount_paid }: { meter_id: string
 
 export async function getAdminTrackingData() {
     const supabase = await createClient()
+    const adminSupabase = createAdminClient()
 
     const { data: meters } = await supabase
         .from('meters')
@@ -157,15 +168,68 @@ export async function getAdminTrackingData() {
         .select('*, meters(meter_code, profiles(full_name))')
         .order('created_at', { ascending: false })
 
-    const { data: alerts } = await supabase
-        .from('alerts')
-        .select('*, meters(meter_code)')
+    // Use the same logic as System Event Log: Fetch alerts from notifications table
+    const { data: notifications } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('type', 'alert')
         .order('created_at', { ascending: false })
 
     return {
         meters: meters || [],
         topups: topups || [],
-        alerts: alerts || []
+        alerts: notifications || [] // Unified with notifications
+    }
+}
+
+// Helper to create low balance alert
+async function checkAndCreateAlert(supabase: any, meterId: string, balance: number) {
+    if (balance <= 10) {
+        // Use Admin client for system-level alerts to ensure they are always recorded
+        const adminSupabase = createAdminClient()
+        const { data: meter } = await adminSupabase.from('meters').select('meter_code').eq('id', meterId).single()
+
+        if (meter) {
+            console.log(`[ALERT] Processing low balance for ${meter.meter_code}: ${balance}kWh`)
+
+            // 1. Create System Notification
+            const { error: noteErr } = await adminSupabase.from('notifications').insert({
+                type: 'alert',
+                title: 'Low Balance Warning',
+                message: `Meter ${meter.meter_code} is low on credit (${balance.toFixed(1)} kWh)`,
+                link: `/admin/insights`
+            })
+            if (noteErr) console.error('[ALERT] Notification failed:', noteErr.message)
+
+            // 2. Create/Update Entry in Alerts table
+            const { data: existing } = await adminSupabase
+                .from('alerts')
+                .select('id')
+                .eq('meter_id', meterId)
+                .eq('type', 'LOW_BALANCE')
+                .eq('is_resolved', false)
+                .maybeSingle()
+
+            if (!existing) {
+                const { error: alrtErr } = await adminSupabase.from('alerts').insert({
+                    meter_id: meterId,
+                    type: 'LOW_BALANCE',
+                    message: `Balance dropped to ${balance.toFixed(1)} kWh`,
+                    is_resolved: false
+                })
+                if (alrtErr) console.error('[ALERT] Alerts table insert failed:', alrtErr.message)
+                else console.log('[ALERT] Successfully recorded in alerts table')
+            }
+        }
+    } else {
+        const adminSupabase = createAdminClient()
+        // Resolve any existing low balance alerts if balance is now healthy
+        await adminSupabase
+            .from('alerts')
+            .update({ is_resolved: true })
+            .eq('meter_id', meterId)
+            .eq('type', 'LOW_BALANCE')
+            .eq('is_resolved', false)
     }
 }
 
@@ -179,30 +243,10 @@ export async function updateMeterBalance(meterId: string, newBalance: number) {
 
     if (error) throw error
 
-    if (newBalance <= 10) {
-        // Create notification for Admin about low balance
-        const { data: meter } = await supabase.from('meters').select('meter_code').eq('id', meterId).single()
-        if (meter) {
-            await supabase.from('notifications').insert({
-                type: 'alert',
-                title: 'Low Balance Warning',
-                message: `Meter ${meter.meter_code} is low on credit (${newBalance} kWh)`,
-                link: `/admin/insights`
-            })
-            // Try to insert into alerts table if it exists
-            try {
-                await supabase.from('alerts').insert({
-                    meter_id: meterId,
-                    type: 'LOW_BALANCE',
-                    message: `Balance dropped to ${newBalance.toFixed(1)} kWh`,
-                    is_resolved: false
-                })
-            } catch (e) {
-                // ignore
-            }
-        }
-    }
+    // Call alert check
+    await checkAndCreateAlert(supabase, meterId, newBalance)
 
     revalidatePath('/admin/tracking')
+    revalidatePath('/admin/insights')
     revalidatePath('/dashboard')
 }

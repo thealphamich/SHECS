@@ -63,7 +63,7 @@ export function TopUpModule({ meterId, meterCode, currentMonthlyUsage = 0, categ
                 amount_paid: Number(amount)
             })
             setResult(res)
-            toast.success('Credit generated successfully!')
+            toast.success('Credits added Successfully')
 
             // Delay reload to allow user to see success message
             setTimeout(() => {

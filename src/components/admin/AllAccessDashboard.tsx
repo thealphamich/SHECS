@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
     Search,
     Zap,
@@ -109,34 +111,48 @@ export function AllAccessDashboard({ data, initialSearch = '' }: AllAccessDashbo
                             const dataToExport = activeTab === 'meters' ? filteredMeters : activeTab === 'topups' ? filteredTopups : filteredAlerts
                             if (!dataToExport.length) return toast.error('No data to export')
 
+                            const doc = new jsPDF()
+
+                            // Add Title
+                            doc.setFontSize(22)
+                            doc.setTextColor(30, 41, 59) // Slate-800
+                            doc.text('Smart Home Energy Control System', 14, 22)
+
+                            // Add Subtitle (Tab name and date)
+                            doc.setFontSize(11)
+                            doc.setTextColor(100, 116, 139) // Slate-500
+                            const reportType = activeTab === 'meters' ? 'Meter Inventory' : activeTab === 'topups' ? 'Transaction History' : 'System Alerts'
+                            doc.text(`${reportType} • Generated on ${new Date().toLocaleString()}`, 14, 30)
+
                             const headers = activeTab === 'meters'
-                                ? ['Meter Code', 'Balance (kWh)', 'Status', 'Block', 'House']
+                                ? [['Meter Code', 'Balance (kWh)', 'Status', 'Block', 'House']]
                                 : activeTab === 'topups'
-                                    ? ['Date', 'Meter Code', 'Amount (RWF)', 'Units (kWh)', 'Token']
-                                    : ['Date', 'Meter Code', 'Type', 'Message']
+                                    ? [['Date', 'Meter Code', 'Amount (RWF)', 'Units (kWh)', 'Token']]
+                                    : [['Date', 'Title', 'Alert Message']]
 
                             const rows = dataToExport.map(item => {
-                                if (activeTab === 'meters') return [item.meter_code, item.balance_kwh, item.status, item.block, item.house_unit]
-                                if (activeTab === 'topups') return [new Date(item.created_at).toLocaleString(), item.meters?.meter_code, item.amount_paid, item.units_bought, item.token_code]
-                                return [new Date(item.created_at).toLocaleString(), item.meters?.meter_code, item.type, item.message]
+                                if (activeTab === 'meters') return [item.meter_code, `${Number(item.balance_kwh).toFixed(1)} kWh`, item.status, item.block, item.house_unit]
+                                if (activeTab === 'topups') return [new Date(item.created_at).toLocaleDateString(), item.meters?.meter_code, `${item.amount_paid.toLocaleString()} RWF`, `${Number(item.kwh_bought || item.units_bought).toFixed(1)} kWh`, item.token_code]
+                                return [new Date(item.created_at).toLocaleString(), item.title, item.message]
                             })
 
-                            const csvContent = [
-                                headers.join(','),
-                                ...rows.map(r => r.map(c => `"${c}"`).join(','))
-                            ].join('\n')
+                            autoTable(doc, {
+                                head: headers,
+                                body: rows,
+                                startY: 40,
+                                styles: { fontSize: 9, cellPadding: 4 },
+                                headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' }, // Blue-600
+                                alternateRowStyles: { fillColor: [248, 250, 252] }, // Slate-50
+                                margin: { left: 14, right: 14 }
+                            })
 
-                            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-                            const link = document.createElement('a')
-                            link.href = URL.createObjectURL(blob)
-                            link.download = `shecs_${activeTab}_${new Date().toISOString().split('T')[0]}.csv`
-                            link.click()
-                            toast.success(`Exported ${dataToExport.length} records`)
+                            doc.save(`shecs_${activeTab}_report_${new Date().toISOString().split('T')[0]}.pdf`)
+                            toast.success(`Exported ${dataToExport.length} records to PDF`)
                         }}
                         className="px-4 py-3 bg-card border border-border text-muted rounded-2xl hover:bg-background hover:text-foreground transition-all font-bold text-xs uppercase tracking-widest flex items-center gap-2"
                     >
-                        <ArrowUpRight className="w-4 h-4 rotate-45" />
-                        <span className="hidden md:inline">Export CSV</span>
+                        <Clock className="w-4 h-4" />
+                        <span className="hidden md:inline">Export Report</span>
                     </button>
 
                     <div className="relative w-full md:w-80">
@@ -230,7 +246,7 @@ export function AllAccessDashboard({ data, initialSearch = '' }: AllAccessDashbo
                                     </div>
                                 </div>
                                 <div className="text-right">
-                                    <p className="text-lg font-black text-foreground">+{Number(topup.units_bought).toFixed(1)} kWh</p>
+                                    <p className="text-lg font-black text-foreground">+{Number(topup.kwh_bought || topup.units_bought || 0).toFixed(1)} kWh</p>
                                     <p className="text-[10px] text-muted font-bold uppercase tracking-widest">{new Date(topup.created_at).toLocaleDateString()}</p>
                                 </div>
                             </div>
@@ -242,11 +258,11 @@ export function AllAccessDashboard({ data, initialSearch = '' }: AllAccessDashbo
                     <div className="divide-y divide-border/40">
                         {filteredAlerts.map((alert) => (
                             <div key={alert.id} className="p-6 hover:bg-background/50 transition-colors flex items-center gap-4">
-                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${alert.type === 'LOW_BALANCE' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400' : 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'}`}>
+                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${alert.title.includes('Low') ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400' : 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'}`}>
                                     <AlertTriangle className="w-6 h-6" />
                                 </div>
                                 <div>
-                                    <h4 className="font-black text-foreground">{alert.meters?.meter_code}</h4>
+                                    <h4 className="font-black text-foreground">{alert.title}</h4>
                                     <p className="text-sm text-foreground/80 font-medium">{alert.message}</p>
                                     <p className="text-[10px] text-muted font-bold uppercase tracking-widest mt-1">{new Date(alert.created_at).toLocaleString()}</p>
                                 </div>

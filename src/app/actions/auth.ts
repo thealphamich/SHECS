@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
@@ -29,7 +30,7 @@ export async function login(formData: FormData) {
     const isAdmin = profile?.role === 'admin' || email === 'dripmich@gmail.com'
 
     revalidatePath('/', 'layout')
-    redirect(isAdmin ? '/admin' : '/dashboard')
+    redirect(isAdmin ? '/admin?toast_success=Welcome back! Logged in successfully.' : '/dashboard?toast_success=Welcome back! Logged in successfully.')
 }
 
 export async function signup(formData: FormData) {
@@ -59,17 +60,18 @@ export async function signup(formData: FormData) {
 }
 
 export async function createUserAction(formData: FormData) {
+    const adminSupabase = createAdminClient()
     const supabase = await createClient()
 
-    // Verify admin
-    const { data: { user } } = await supabase.auth.getUser()
+    // Verify current user is admin
+    const { data: { user: currentUser } } = await supabase.auth.getUser()
     const { data: profile } = await supabase
         .from('profiles')
         .select('role')
-        .eq('id', user?.id)
+        .eq('id', currentUser?.id)
         .single()
 
-    if (profile?.role !== 'admin' && user?.email !== 'dripmich@gmail.com') {
+    if (profile?.role !== 'admin' && currentUser?.email !== 'dripmich@gmail.com') {
         return { error: 'Unauthorized: Only admins can create users.' }
     }
 
@@ -78,33 +80,50 @@ export async function createUserAction(formData: FormData) {
     const fullName = formData.get('fullName') as string
     const role = formData.get('role') as string
 
-    // Note: This uses the public signUp method which logs the new user in.
-    // In a real admin scenario, you'd use the service_role key to access auth.admin.createUser
-    // to avoid logging out the admin. Since we are using standard client/server structure:
-    // OPTION 1 (Standard): We can't easily create a user without logging out unless we use Admin API.
-    // OPTION 2 (Simulation): We insert into profiles directly? No, auth needs the user in auth.users.
+    // 1. Create the user in Auth with service role (bypass confirmation, no auto-login)
+    const { data: authData, error: authError } = await adminSupabase.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: { full_name: fullName }
+    })
 
-    // Attempting to use the passed client which is limited. 
-    // IF the user is an admin they likely have permissions, but `signUp` changes the session on the server.
-    // However, Supabase Admin API is needed for "create user without sign in".
+    if (authError) {
+        return { error: authError.message }
+    }
 
-    // For this specific iteration, we will assume we can't create a real AUTH user purely from the client side without logging out.
-    // BUT! Since we are on the server, we might be able to use a Service Role client if we had the key.
-    // Since we don't have the service key exposed in env vars (usually), we might face a limitation.
+    if (!authData.user) {
+        return { error: 'Failed to create auth user.' }
+    }
 
-    // WORKAROUND: For this demo, we will return a "Simulated" success or an error explaining the limitation if we fail.
-    // But let's try to see if we can just do it. 
+    // 2. Update the profile role (the trigger handle_new_user likely already created the profile)
+    // We use service role to ensure we can update any profile
+    const { error: profileError } = await adminSupabase
+        .from('profiles')
+        .update({ role, full_name: fullName })
+        .eq('id', authData.user.id)
 
-    // Actually, `supabase.auth.signUp` on the server SIDE (using createClient from server.ts) acts on the current session.
-    // Meaning it would log the admin out.
+    if (profileError) {
+        // If trigger didn't handle it, try insert
+        const { error: insertError } = await adminSupabase
+            .from('profiles')
+            .insert({
+                id: authData.user.id,
+                full_name: fullName,
+                role: role
+            })
 
-    return { error: 'Command "Create User" requires Service Role access (Admin API) which is not currently configured for this view. Please use the Supabase Dashboard to add new users manually.' }
+        if (insertError) return { error: `User created but profile update failed: ${insertError.message}` }
+    }
+
+    revalidatePath('/admin/users')
+    return { success: 'User created successfully.' }
 }
 
 export async function logout() {
     const supabase = await createClient()
     await supabase.auth.signOut()
-    redirect('/login')
+    redirect('/login?toast_success=Goodbye! Logged out successfully.')
 }
 
 export async function updateProfile(formData: FormData) {
